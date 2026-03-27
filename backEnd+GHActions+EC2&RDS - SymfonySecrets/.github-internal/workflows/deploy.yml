@@ -1,0 +1,98 @@
+name: Deploy to AWS EC2
+
+on:
+    push:
+        branches:
+            - develop
+    workflow_dispatch:
+
+jobs:
+    deploy:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code (baixem el codi del repositori al runner)
+              uses: actions/checkout@v4 
+
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: "8.2" # Ajusta a la versió del teu servidor
+                  extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, zip, bcmath
+                  coverage: none
+
+            #  ja no funciona aquesta action ja no exsiteix
+
+            # - name: Configurar llave SSH
+            #   uses: shivammathur/setup-ssh@v2
+            #   with:
+            #       ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+            #       known-hosts: ${{ vars.EC2_HOST }}
+
+            # - name: Añadir servidor a conocidos (Evitar el prompt de yes/no)
+            #   run: ssh-keyscan -H ${{ vars.EC2_HOST }} >> ~/.ssh/known_hosts
+
+            # --- fer la connexió de forma manual ---
+            - name: Configurar SSH y Known Hosts
+              run: |
+                  mkdir -p ~/.ssh/
+                  echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+                  chmod 600 ~/.ssh/id_rsa
+                  ssh-keyscan -H ${{ vars.EC2_HOST }} >> ~/.ssh/known_hosts
+
+            - name: Copiar archivos con RSYNC
+              run: |
+                  rsync -avz --delete \
+                  --exclude '.git/' \
+                  --exclude '.github/' \
+                  --exclude 'var/' \
+                  --exclude 'vendor/' \
+                  ./ ${{ vars.EC2_USER }}@${{ vars.EC2_HOST }}:/var/www/backend/
+              #   --exclude '.env' \ # Normalment no es recomana pujar el fitxer .env, ja que conté secrets. Aquest fitxer s'hauria de configurar manualment al servidor o injectar com a secrets.
+
+            # -----------------------
+            # - name: Install Composer Dependencies
+            #   run: composer install --no-dev --optimize-autoloader --no-progress --no-suggest
+
+            # - name: Deploy to EC2
+            #   uses: easingthemes/ssh-deploy@v5.0.0
+            #   env:
+            #     SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+            #     ARGS: "-rlgoDzvc -i --delete"
+            #     SOURCE: "."
+            #     REMOTE_HOST: ${{ vars.EC2_HOST }}
+            #     REMOTE_USER: "ubuntu"
+            #     TARGET: "/var/www/symfony"
+            #     EXCLUDE: "/.git/, /tests/, /.github/, /node_modules/"
+
+            - name: Execute Remote Commands
+              uses: appleboy/ssh-action@v1.0.3
+              with:
+                  host: ${{ vars.EC2_HOST }}
+                  username: "ubuntu"
+                  key: ${{ secrets.EC2_SSH_KEY }}
+                  script: |
+                      # Navegar al directori
+                      cd /var/www/backend
+
+                      # Crear fitxer .env.local amb les variables de producció si no existeix
+                      # (Idealment, aquest fitxer s'hauria de crear manualment o injectar secrets aquí)
+                      # if [ ! -f .env.local ]; then
+                      #     echo "APP_ENV=prod" > .env.local
+                      #     echo "APP_SECRET=${{ secrets.APP_SECRET }}" >> .env.local
+                      #     echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> .env.local
+                      # fi
+
+                      # Instal·lar dependències (per assegurar-se)
+                      export COMPOSER_ALLOW_SUPERUSER=1
+                      composer install --no-dev --optimize-autoloader
+
+                      # Netejar cache
+                      php bin/console cache:clear --env=prod
+
+                      # Executar migracions (Opcional, descomentar si es vol automàtic)
+                      # php bin/console doctrine:migrations:migrate --no-interaction
+
+                      # Permisos (important per Apache www-data)
+                      sudo chown -R ubuntu:www-data /var/www/backend
+                      sudo chmod -R 775 /var/www/backend/var
